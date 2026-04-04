@@ -22,6 +22,7 @@ def get_smtp_credentials():
         host = st.secrets.get("SMTP_HOST", "smtp.gmail.com")
         port = int(st.secrets.get("SMTP_PORT", 587))
         return email, password, host, port
+
     except Exception:
         # LOCAL fallback
         import os
@@ -40,6 +41,26 @@ def get_smtp_credentials():
 
 
 # =========================================================
+# ✅ Build Password Reset Link (Cloud + Local Safe)
+# =========================================================
+
+def build_reset_link(token: str):
+    """
+    Builds a safe password reset link using:
+    ✅ Streamlit Secrets APP_URL on Cloud
+    ✅ Localhost fallback when running locally
+    """
+
+    app_url = st.secrets.get("APP_URL", "http://localhost:8501")
+
+    # Remove trailing slash if present
+    if app_url.endswith("/"):
+        app_url = app_url[:-1]
+
+    return f"{app_url}/?reset_token={token}"
+
+
+# =========================================================
 # ✅ Send Password Reset Email
 # =========================================================
 
@@ -47,7 +68,7 @@ def send_reset_email(to_email: str, token: str):
     """Send a Gmail SMTP password reset email."""
     sender_email, sender_password, smtp_host, smtp_port = get_smtp_credentials()
 
-    reset_link = f"{st.secrets.get('APP_URL', 'http://localhost:8501')}?reset_token={token}"
+    reset_link = build_reset_link(token)
 
     html_body = f"""
     <html>
@@ -56,10 +77,10 @@ def send_reset_email(to_email: str, token: str):
             <p>Hello,</p>
             <p>You requested to reset your Cross Courts account password.</p>
 
-            <p><b>Click below to reset:</b></p>
+            <p><b>Click below to reset your password:</b></p>
             <p><a href="{reset_link}">{reset_link}</a></p>
 
-            <p>If you did NOT request this, you can ignore this email.</p>
+            <p>If you did NOT request this reset, you can safely ignore this email.</p>
 
             <br>
             <p>Thanks,<br>Cross Courts Admin</p>

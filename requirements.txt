@@ -8,3 +8,4 @@ requests
 python-dateutil
 argon2-cffi
 argon2-cffi-bindings
+numpy-financial

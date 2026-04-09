@@ -1,150 +1,151 @@
 import streamlit as st
-import pandas as pd
-
-from roles import require_role
-from constants import (
-    ROLE_SUPERUSER,
-    ROLE_EDITOR,
-    ROLE_VIEWER,
-    STATUS_PENDING,
-    STATUS_ACTIVE,
-    STATUS_INACTIVE,
-)
-from db import (
-    get_pending_users,
-    get_user_by_id,
-    set_user_status,
-    set_user_role,
-    supabase,
-)
-
+from db import supabase
+from auth import require_role, set_user_role, get_user_role
+from constants import ROLE_SUPERUSER, ROLE_EDITOR, ROLE_VIEWER
 
 # =========================================================
-# ✅ PAGE PROTECTION
+# ✅ ACCESS RESTRICTION: SuperUser ONLY
 # =========================================================
 require_role([ROLE_SUPERUSER])
 
-st.title("✅ User Approval & Role Management")
+st.title("✅ Approval Center")
+
+st.write("Manage account approvals and assign roles to users.")
 
 
 # =========================================================
-# ✅ SECTION 1 — PENDING APPROVAL USERS
+# ✅ HELPERS
 # =========================================================
-st.subheader("⏳ Pending Approvals")
 
-pending = get_pending_users()
+def fetch_pending_users():
+    return (
+        supabase.table("users")
+        .select("user_id, email, full_name, created_at, status")
+        .eq("status", "Pending")  # ✅ pending in USERS table
+        .execute()
+        .data
+    ) or []
 
-if len(pending) == 0:
-    st.info("No pending users.")
+
+def fetch_active_users():
+    return (
+        supabase.table("users")
+        .select("user_id, email, full_name, created_at, status")
+        .eq("status", "Active")
+        .order("created_at")
+        .execute()
+        .data
+    ) or []
+
+
+def fetch_roles():
+    return (
+        supabase.table("roles")
+        .select("role_id, role_name")
+        .order("role_id")
+        .execute()
+        .data
+    ) or []
+
+
+# =========================================================
+# ✅ SECTION A — PENDING USERS APPROVAL
+# =========================================================
+
+pending_users = fetch_pending_users()
+roles = fetch_roles()
+
+role_names = [r["role_name"] for r in roles]
+role_name_to_id = {r["role_name"]: r["role_id"] for r in roles}
+
+st.subheader("⏳ Pending Account Approvals")
+
+if not pending_users:
+    st.success("✅ No pending users. All accounts approved.")
 else:
-    df_pending = pd.DataFrame(pending)
-
-    for _, row in df_pending.iterrows():
-        email = row["email"]
-        uid = row["user_id"]
+    for user in pending_users:
+        user_id = user["user_id"]
+        full_name = user["full_name"]
+        email = user["email"]
+        created = user["created_at"]
 
         with st.container(border=True):
-            st.write(f"**📧 {email}**")
-            st.write(f"Full Name: {row['full_name']}")
 
-            colA, colB, colC = st.columns([1,1,2])
+            c1, c2 = st.columns([0.45, 0.55])
 
-            with colA:
-                if st.button("✅ Approve", key=f"approve_{uid}"):
-                    set_user_status(uid, STATUS_ACTIVE)
-                    set_user_role(uid, ROLE_VIEWER)
-                    st.success(f"Approved {email}")
-                    st.rerun()
+            with c1:
+                st.markdown(f"""
+                **Name:** {full_name}  
+                **Email:** {email}  
+                **Created:** {created}  
+                **Status:** `Pending`
+                """)
 
-            with colB:
-                if st.button("❌ Reject", key=f"reject_{uid}"):
-                    supabase.table("users").delete().eq("user_id", uid).execute()
-                    st.warning(f"Rejected {email}")
-                    st.rerun()
+            with c2:
+                selected_role = st.selectbox(
+                    f"Assign Initial Role for {full_name}",
+                    role_names,
+                    key=f"pending_role_select_{user_id}"
+                )
+
+                if st.button(f"✅ Approve {full_name}", key=f"approve_{user_id}", use_container_width=True):
+                    try:
+                        # ✅ set_user_role also activates the user
+                        set_user_role(user_id, selected_role)
+
+                        st.success(f"✅ {full_name} approved! Assigned role: {selected_role}")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Error approving user: {e}")
 
 
 # =========================================================
-# ✅ SECTION 2 — ACTIVE USERS (Manage Roles / Status)
+# ✅ SECTION B — ACTIVE USERS (ROLE MANAGEMENT)
 # =========================================================
-st.subheader("👥 Active Users")
+st.subheader("👥 Active Users — Role Management")
 
-active_users = (
-    supabase.table("users")
-    .select("*")
-    .eq("status", STATUS_ACTIVE)
-    .execute()
-    .data
-)
+active_users = fetch_active_users()
 
-if len(active_users) == 0:
-    st.info("No active users.")
+if not active_users:
+    st.info("No active users found.")
 else:
-    df = pd.DataFrame(active_users)
+    for user in active_users:
+        user_id = user["user_id"]
+        full_name = user["full_name"]
+        email = user["email"]
+        created = user["created_at"]
 
-    for _, row in df.iterrows():
-        email = row["email"]
-        uid = row["user_id"]
+        # ✅ Do not allow self-role-edit by SuperUser
+        if user_id == st.session_state.get("user_id"):
+            continue
 
-        # Fetch role
-        role_data = supabase.table("user_roles") \
-            .select("roles(role_name)") \
-            .eq("user_id", uid).execute().data
-
-        role_name = role_data[0]["roles"]["role_name"] if role_data else "Viewer"
+        current_role = get_user_role(user_id) or "None"
 
         with st.container(border=True):
-            st.write(f"**📧 {email}**")
-            st.write(f"Role: **{role_name}**")
-
-            new_role = st.selectbox(
-                "Change Role",
-                [ROLE_VIEWER, ROLE_EDITOR, ROLE_SUPERUSER],
-                index=["Viewer", "Editor", "SuperUser"].index(role_name),
-                key=f"role_select_{uid}",
-            )
-
-            col1, col2 = st.columns([1,1])
+            col1, col2 = st.columns([0.45, 0.55])
 
             with col1:
-                if st.button("💾 Update Role", key=f"update_role_{uid}"):
-                    set_user_role(uid, new_role)
-                    st.success(f"Updated role for {email}")
-                    st.rerun()
+                st.markdown(f"""
+                **Name:** {full_name}  
+                **Email:** {email}  
+                **Created:** {created}  
+                **Account Status:** `Active`  
+                **Current Role:** `{current_role}`
+                """)
 
             with col2:
-                if st.button("Deactivate User", key=f"deact_{uid}"):
-                    set_user_status(uid, STATUS_INACTIVE)
-                    st.warning(f"Deactivated {email}")
-                    st.rerun()
+                new_role = st.selectbox(
+                    f"Change Role for {full_name}",
+                    role_names,
+                    index=role_names.index(current_role) if current_role in role_names else 0,
+                    key=f"active_role_{user_id}"
+                )
 
-
-# =========================================================
-# ✅ SECTION 3 — INACTIVE USERS
-# =========================================================
-st.subheader("🚫 Inactive Users")
-
-inactive_users = (
-    supabase.table("users")
-    .select("*")
-    .eq("status", STATUS_INACTIVE)
-    .execute()
-    .data
-)
-
-if len(inactive_users) == 0:
-    st.info("No inactive users.")
-else:
-    df = pd.DataFrame(inactive_users)
-
-    for _, row in df.iterrows():
-        email = row["email"]
-        uid = row["user_id"]
-
-        with st.container(border=True):
-            st.write(f"📧 {email}")
-
-            if st.button("✅ Activate", key=f"activate_{uid}"):
-                set_user_status(uid, STATUS_ACTIVE)
-                set_user_role(uid, ROLE_VIEWER)
-                st.success(f"Activated {email}")
-                st.rerun()
+                if st.button(f"✅ Update Role for {full_name}", key=f"update_role_{user_id}", use_container_width=True):
+                    try:
+                        set_user_role(user_id, new_role)
+                        st.success(f"✅ Role updated: {full_name} → {new_role}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error updating role: {e}")
